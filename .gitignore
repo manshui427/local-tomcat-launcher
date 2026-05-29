@@ -1,0 +1,44 @@
+# Dependencies
+node_modules/
+
+# TypeScript compiled output
+out/
+dist/
+*.tsbuildinfo
+
+# VSCode Extension packaging
+*.vsix
+
+# Test artifacts
+.vscode-test/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# OS generated
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temporary files
+*.tmp
+*.swp
+*.swo
+*~
+
+# VSCode workspace (user settings, not project settings)
+.vscode
+
+# Bundled Tomcat runtime (large binary, downloaded separately)
+resources/tomcat9/

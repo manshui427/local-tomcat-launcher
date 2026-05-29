@@ -1,0 +1,106 @@
+{
+  "name": "local-tomcat-launcher",
+  "displayName": "Local Tomcat Launcher",
+  "description": "通过配置文件快速启动/停止/刷新本机Tomcat，支持Maven项目编译和热加载",
+  "version": "0.1.0",
+  "publisher": "local-tomcat-launcher",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onLanguage:java",
+    "workspaceContains:pom.xml"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "local-tomcat-launcher.start",
+        "title": "启动Tomcat",
+        "icon": "$(play)"
+      },
+      {
+        "command": "local-tomcat-launcher.stop",
+        "title": "停止Tomcat",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "local-tomcat-launcher.restart",
+        "title": "重启Tomcat",
+        "icon": "$(sync)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "command": "local-tomcat-launcher.start",
+          "group": "navigation@1"
+        },
+        {
+          "command": "local-tomcat-launcher.stop",
+          "group": "navigation@2"
+        },
+        {
+          "command": "local-tomcat-launcher.restart",
+          "group": "navigation@3"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Tomcat配置",
+      "properties": {
+        "support.tomcat.home": {
+          "type": "string",
+          "default": "",
+          "description": "Tomcat安装路径（空则使用内置Tomcat9）",
+          "scope": "workspace"
+        },
+        "support.tomcat.port": {
+          "type": "number",
+          "default": 8080,
+          "description": "Tomcat HTTP发布端口",
+          "scope": "workspace",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "support.tomcat.debugPort": {
+          "type": "number",
+          "default": 5005,
+          "description": "Tomcat Debug端口（JPDA）",
+          "scope": "workspace",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "support.tomcat.contextPath": {
+          "type": "string",
+          "default": "dev",
+          "description": "Tomcat部署名称（Exploded WAR目录名）",
+          "scope": "workspace"
+        },
+        "support.tomcat.vmOptions": {
+          "type": "string",
+          "default": "",
+          "description": "Tomcat启动时使用的VM参数（如-Xms512m -Xmx1024m）",
+          "scope": "workspace"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile",
+    "lint": "echo \"暂未配置lint\"",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@vscode/vsce": "^3.9.1",
+    "typescript": "^6.0.3",
+    "vscode": "^1.1.37"
+  }
+}
