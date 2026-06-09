@@ -2,7 +2,7 @@
   "name": "local-tomcat-launcher",
   "displayName": "Local Tomcat Launcher",
   "description": "通过配置文件在VSCode中快速启动/停止/重启本机Tomcat，支持Maven编译和热加载",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "manshui",
   "license": "MIT",
   "repository": {
