@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { TomcatInstance, TomcatStatus, HotLoadStrategy, JAVA_EXTENSIONS, JSP_EXTENSIONS, CONFIG_EXTENSIONS, POM_FILENAME, JAVA_WORKSPACE_COMPILE_COMMAND } from '../constants';
+import { TomcatInstance, TomcatStatus, HotLoadStrategy, JAVA_EXTENSIONS, JSP_EXTENSIONS, CONFIG_EXTENSIONS, POM_FILENAME, JAVA_WORKSPACE_COMPILE_COMMAND, HOT_RELOAD_MONITORED_PATHS, HOT_RELOAD_ROOT_FILES } from '../constants';
 import { TomcatService } from './tomcatService';
 import { MavenService } from './mavenService';
 import { FileUtils } from '../utils/fileUtils';
@@ -29,7 +29,6 @@ export class HotReloadService implements vscode.Disposable {
   private async handleFileSave(document: vscode.TextDocument): Promise<void> {
     const instance = this.tomcatService.getInstance();
     const filePath = document.uri.fsPath;
-    const strategy = this.identifyFileType(filePath);
 
     // 确定目标目录：运行中同步到deployDir，未运行时同步到Maven输出目录
     let deployDir: string | null = null;
@@ -52,6 +51,17 @@ export class HotReloadService implements vscode.Disposable {
     if (!workspacePath || !filePath.startsWith(workspacePath)) {
       return;
     }
+
+    // 热更新路径范围过滤：只监听src/main/java、src/main/resources、src/main/webapp和根目录pom.xml
+    const relativePath = path.relative(workspacePath, filePath);
+    const normalizedRelativePath = relativePath.replace(/\\/g, '/');
+    const isMonitoredPath = HOT_RELOAD_MONITORED_PATHS.some(p => normalizedRelativePath.startsWith(p + '/'));
+    const isRootFile = HOT_RELOAD_ROOT_FILES.some(f => normalizedRelativePath === f);
+    if (!isMonitoredPath && !isRootFile) {
+      return;
+    }
+
+    const strategy = this.identifyFileType(filePath);
 
     // 无部署目录时：Java做增量编译，非Java跳过
     if (!deployDir) {

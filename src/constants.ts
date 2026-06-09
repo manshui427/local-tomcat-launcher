@@ -40,6 +40,22 @@ export const JSP_EXTENSIONS = ['.jsp'];
 export const CONFIG_EXTENSIONS = ['.xml', '.properties', '.yml', '.yaml'];
 export const POM_FILENAME = 'pom.xml';
 
+// 热更新监听范围（相对于workspace根目录）
+export const HOT_RELOAD_MONITORED_PATHS: readonly string[] = [
+  'src/main/java',
+  'src/main/resources',
+  'src/main/webapp',
+];
+
+// 热更新监听的根目录文件名
+export const HOT_RELOAD_ROOT_FILES: readonly string[] = ['pom.xml'];
+
+// redhat.java JDK路径配置键
+export const JAVA_CONFIG_SECTION = 'java';
+export const JAVA_JDT_LS_HOME_KEY = 'jdt.ls.java.home';
+export const JAVA_HOME_DEPRECATED_KEY = 'home';
+export const JAVA_CONFIGURATION_RUNTIMES_KEY = 'configuration.runtimes';
+
 // 状态栏显示文字
 export const STATUS_TEXT: Record<TomcatStatus, string> = {
   IDLE: '$(circle-slash) 已停止',

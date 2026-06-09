@@ -21,7 +21,7 @@ export class MavenService {
     const { promise } = ProcessUtils.spawnCommand(
       'mvn',
       ['compile', 'war:exploded'],
-      { cwd: workspacePath, shell: true },
+      { cwd: workspacePath, shell: true, env: { JAVA_TOOL_OPTIONS: '-Dfile.encoding=UTF-8' } },
       channel
     );
 

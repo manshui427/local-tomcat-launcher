@@ -57,15 +57,18 @@
       "editor/title": [
         {
           "command": "local-tomcat-launcher.start",
+          "when": "localTomcatLauncherActive",
           "group": "navigation@1"
         },
         {
           "command": "local-tomcat-launcher.stop",
-          "group": "navigation@2"
+          "when": "localTomcatLauncherActive",
+          "group": "navigation@1.01"
         },
         {
           "command": "local-tomcat-launcher.restart",
-          "group": "navigation@3"
+          "when": "localTomcatLauncherActive",
+          "group": "navigation@1.02"
         }
       ]
     },

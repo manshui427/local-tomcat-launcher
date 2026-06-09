@@ -24,7 +24,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   tomcatService = new TomcatService(context, outputChannelManager, statusBarManager);
   hotReloadService = new HotReloadService(tomcatService, outputChannelManager);
 
-  registerCommands(context, tomcatService);
+  registerCommands(context, tomcatService, outputChannelManager);
   // 注册文件监听，Tomcat未运行时也会同步文件到Maven输出目录
   hotReloadService.registerFileWatcher();
   statusBarManager.updateStatus(TomcatStatus.IDLE);

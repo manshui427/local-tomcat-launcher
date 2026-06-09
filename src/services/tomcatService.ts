@@ -18,7 +18,6 @@ export class TomcatService {
   private mavenService: MavenService;
   private instance: TomcatInstance | null = null;
   private tomcatProcess: ReturnType<typeof spawn> | null = null;
-  private logWatchers: fs.FSWatcher[] = [];
 
   constructor(context: vscode.ExtensionContext, outputChannel: OutputChannelManager, statusBar: StatusBarManager) {
     this.context = context;
@@ -100,7 +99,6 @@ export class TomcatService {
     this.statusBar.updateStatus(TomcatStatus.STARTING);
     this.outputChannel.appendLine('=== 开始启动Tomcat ===');
     await this.startTomcatProcess(catalinaBase, tomcatHome, config);
-    this.watchTomcatLogs(catalinaBase);
 
     this.instance.status = TomcatStatus.RUNNING;
     this.instance.startTime = new Date();
@@ -118,7 +116,6 @@ export class TomcatService {
       await ProcessUtils.killProcess(this.instance.processId);
     }
     if (this.tomcatProcess) { this.tomcatProcess.kill(); this.tomcatProcess = null; }
-    this.clearLogWatchers();
     this.instance.processId = null; this.instance.childProcessId = null; this.instance.startTime = null;
     this.instance.status = TomcatStatus.IDLE;
     this.statusBar.updateStatus(TomcatStatus.IDLE);
@@ -136,7 +133,6 @@ export class TomcatService {
     if (cpid) { await ProcessUtils.killProcessTree(cpid); }
     if (ppid && ppid !== cpid) { await ProcessUtils.killProcess(ppid); }
     if (this.tomcatProcess) { this.tomcatProcess.kill(); this.tomcatProcess = null; }
-    this.clearLogWatchers();
     if (port) { await PortUtils.killPortProcess(port); await this.waitForPortFree(port); }
     if (dbgPort) { await PortUtils.killPortProcess(dbgPort); await this.waitForPortFree(dbgPort); }
     if (base && fs.existsSync(base)) { FileUtils.cleanDir(base); }
@@ -149,7 +145,6 @@ export class TomcatService {
   getInstance(): TomcatInstance | null { return this.instance; }
 
   cleanup(): void {
-    this.clearLogWatchers();
     if (this.tomcatProcess) { this.tomcatProcess.kill(); this.tomcatProcess = null; }
   }
 
@@ -183,6 +178,8 @@ export class TomcatService {
 
     // 修改server.xml端口
     this.modifyServerXml(tgtConf, config);
+    // 修改logging.properties：让localhost日志同时输出到控制台
+    this.modifyLoggingProperties(tgtConf);
     this.outputChannel.appendLine(`[CATALINA_BASE] ${catalinaBase}`);
     return catalinaBase;
   }
@@ -196,6 +193,19 @@ export class TomcatService {
     c = c.replace(/(<Connector\s[^>]*?)(port="\d+")/, `$1port="${config.port}"`);
     // Shutdown端口
     c = c.replace(/(<Server\s[^>]*?)(port="\d+")/, '$1port="8006"');
+    fs.writeFileSync(fp, c, 'utf-8');
+  }
+
+  /** 修改logging.properties：让localhost日志同时输出到控制台（stdout） */
+  private modifyLoggingProperties(confDir: string): void {
+    const fp = path.join(confDir, 'logging.properties');
+    if (!fs.existsSync(fp)) return;
+    let c = fs.readFileSync(fp, 'utf-8');
+    // 将localhost的handler从纯文件输出改为同时输出到控制台
+    c = c.replace(
+      /org\.apache\.catalina\.core\.ContainerBase\.\[Catalina\]\.\[localhost\]\.handlers\s*=\s*.+/,
+      'org.apache.catalina.core.ContainerBase.[Catalina].[localhost].handlers = 2localhost.org.apache.juli.AsyncFileHandler, java.util.logging.ConsoleHandler'
+    );
     fs.writeFileSync(fp, c, 'utf-8');
   }
 
@@ -223,9 +233,19 @@ export class TomcatService {
     const env: Record<string, string> = {
       CATALINA_HOME: tomcatHome, CATALINA_BASE: catalinaBase,
       JPDA_ADDRESS: `${config.debugPort}`, JPDA_TRANSPORT: 'dt_socket',
+      JAVA_TOOL_OPTIONS: '-Dfile.encoding=UTF-8',
     };
     if (config.vmOptions) { env.JAVA_OPTS = config.vmOptions; }
-    this.outputChannel.show(true);
+
+    // 设置JRE_HOME为redhat.java使用的JDK路径
+    const javaHome = ConfigUtils.getJavaHome();
+    if (javaHome) {
+      env.JRE_HOME = javaHome;
+      this.outputChannel.appendLine(`[JRE_HOME] ${javaHome}`);
+    } else {
+      this.outputChannel.appendLine('[警告] 未找到Java运行时配置，使用系统默认JRE_HOME/JAVA_HOME');
+    }
+
     const ch = this.outputChannel.getChannel();
     const proc = spawn('cmd', ['/c', 'catalina.bat', 'jpda', 'run'], {
       cwd: path.join(tomcatHome, 'bin'), env: { ...process.env, ...env }, shell: true, windowsHide: true,
@@ -261,29 +281,5 @@ export class TomcatService {
     }
   }
 
-  private watchTomcatLogs(base: string): void {
-    this.clearLogWatchers();
-    const ld = path.join(base, 'logs');
-    if (!fs.existsSync(ld)) fs.mkdirSync(ld, { recursive: true });
-    const d = this.getLogDate();
-    this.watchLogFile(path.join(ld, `catalina.${d}.log`));
-    this.watchLogFile(path.join(ld, `localhost.${d}.log`));
-  }
-
-  private watchLogFile(fp: string): void {
-    if (!fs.existsSync(fp)) return;
-    try {
-      const w = fs.watch(fp, () => {
-        try {
-          const lines = fs.readFileSync(fp, 'utf-8').split('\n').slice(-5);
-          for (const l of lines) { if (l.trim()) this.outputChannel.appendLine(`[log] ${l}`); }
-        } catch { /* 文件正在写入 */ }
-      });
-      this.logWatchers.push(w);
-    } catch { /* 忽略 */ }
-  }
-
-  private clearLogWatchers(): void { for (const w of this.logWatchers) w.close(); this.logWatchers = []; }
-  private getLogDate(): string { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; }
   private getWorkspacePath(): string | null { const f = vscode.workspace.workspaceFolders; return f && f.length > 0 ? f[0].uri.fsPath : null; }
 }

@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { TomcatConfig, ValidationResult, CONFIG_PREFIX, DEFAULT_PORT, DEFAULT_DEBUG_PORT, DEFAULT_CONTEXT_PATH, DEFAULT_VM_OPTIONS } from '../constants';
+import { TomcatConfig, ValidationResult, CONFIG_PREFIX, DEFAULT_PORT, DEFAULT_DEBUG_PORT, DEFAULT_CONTEXT_PATH, DEFAULT_VM_OPTIONS, JAVA_CONFIG_SECTION, JAVA_JDT_LS_HOME_KEY, JAVA_HOME_DEPRECATED_KEY, JAVA_CONFIGURATION_RUNTIMES_KEY } from '../constants';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -62,5 +62,43 @@ export class ConfigUtils {
     }
     const pomContent = fs.readFileSync(pomPath, 'utf-8');
     return !pomContent.includes('<modules>') && !pomContent.includes('<module>');
+  }
+
+  /**
+   * 获取Java运行时路径，优先使用redhat.java配置的JDK路径
+   * 查找顺序: java.configuration.runtimes(default) → java.jdt.ls.java.home → java.home → system JAVA_HOME → system JRE_HOME
+   * @returns JDK/JRE路径字符串，未找到返回undefined
+   */
+  static getJavaHome(): string | undefined {
+    const javaConfig = vscode.workspace.getConfiguration(JAVA_CONFIG_SECTION);
+
+    // 1. 优先从 java.configuration.runtimes 中取 default=true 的路径
+    const runtimes = javaConfig.get<{ name: string; path: string; default?: boolean }[]>(JAVA_CONFIGURATION_RUNTIMES_KEY);
+    if (runtimes && Array.isArray(runtimes)) {
+      const defaultRuntime = runtimes.find(r => r.default === true);
+      if (defaultRuntime && defaultRuntime.path && defaultRuntime.path.trim()) {
+        return defaultRuntime.path.trim();
+      }
+      // 没有 default=true 的条目，取第一个有 path 的
+      const firstRuntime = runtimes.find(r => r.path && r.path.trim());
+      if (firstRuntime) { return firstRuntime.path.trim(); }
+    }
+
+    // 2. 回退到 java.jdt.ls.java.home
+    const jdtHome = javaConfig.get<string>(JAVA_JDT_LS_HOME_KEY);
+    if (jdtHome && jdtHome.trim()) { return jdtHome.trim(); }
+
+    // 3. 回退到旧配置键 java.home （已弃用但仍有用户在使用）
+    const deprecatedHome = javaConfig.get<string>(JAVA_HOME_DEPRECATED_KEY);
+    if (deprecatedHome && deprecatedHome.trim()) { return deprecatedHome.trim(); }
+
+    // 4. 回退到系统环境变量
+    const sysJavaHome = process.env.JAVA_HOME;
+    if (sysJavaHome && sysJavaHome.trim()) { return sysJavaHome.trim(); }
+
+    const sysJreHome = process.env.JRE_HOME;
+    if (sysJreHome && sysJreHome.trim()) { return sysJreHome.trim(); }
+
+    return undefined;
   }
 }
