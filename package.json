@@ -1,10 +1,11 @@
 {
   "name": "local-tomcat-launcher",
   "displayName": "Local Tomcat Launcher",
-  "description": "通过配置文件在VSCode中快速启动/停止/重启本机Tomcat，支持Maven编译和热加载",
+  "description": "Lightweight Tomcat server manager for VSCode — one-click start/stop/restart, built-in Tomcat 9, Maven build, hot-reload, and JPDA remote debug. 在VSCode中快速启动/停止/重启本机Tomcat，支持Maven编译和热加载",
   "version": "0.1.1",
   "publisher": "manshui",
   "license": "MIT",
+  "icon": "icon.png",
   "repository": {
     "type": "git",
     "url": "https://github.com/manshui/local-tomcat-launcher"
@@ -16,16 +17,26 @@
     "vscode": "^1.85.0"
   },
   "categories": [
-    "Other",
-    "Debuggers"
+    "Debuggers",
+    "Programming Languages",
+    "Other"
   ],
   "keywords": [
     "tomcat",
+    "tomcat launcher",
     "java",
+    "servlet",
+    "jsp",
     "maven",
-    "hot-reload",
     "war",
-    "debug"
+    "hot-reload",
+    "hot swap",
+    "debug",
+    "jpda",
+    "java web",
+    "spring",
+    "local server",
+    "deploy"
   ],
   "extensionDependencies": [
     "redhat.java"
