@@ -1,6 +1,6 @@
 # 更新日志
 
-## [0.1.1] - 2026-06-09
+## [0.1.2] - 2026-06-09
 
 ### 修复
 
@@ -19,7 +19,7 @@
 - `hotReloadService.handleFileSave()` 新增路径范围过滤
 - `tomcatService.startTomcatProcess()` 新增 `JRE_HOME` 和 `JAVA_TOOL_OPTIONS` 环境变量设置
 
-## [0.1.0] - 2026-05-29
+## [0.1.1] - 2026-05-29
 
 ### 新增
 
