@@ -1,5 +1,26 @@
 # 更新日志
 
+## [0.1.3] - 2026-07-04
+
+### 重构
+
+- **热加载架构完全重写** — 用 `FileSystemWatcher` 替换 `onDidSaveTextDocument`，现在能监听所有文件变更（不限于编辑器内保存），包括外部工具修改、文件新建和删除
+
+### 新增
+
+- **三路独立文件监听** — `src/main/**`（resources/webapp 同步 + java 增量编译）、`target/classes/**`（同步到部署目录）、`pom.xml`（更新依赖 jar 包）
+- **防抖与去重** — pom.xml 5 秒防抖、java/resources/webapp 1 秒防抖（Map 去重，同一文件多次变更只保留最新操作）、target/classes 无防抖立即同步
+- **文件夹删除同步** — 删除 `src/main/resources`、`src/main/webapp` 或 `target/classes` 下的文件夹时，部署目录中对应文件夹同步删除
+- **按钮防连点保护** — 启动/停止/重启三个按钮加入 `isProcessing` 防护，任意操作执行期间其他按钮点击被忽略
+- **Java 文件变更解耦** — java 文件变更仅触发 JDT 增量编译，不再直接同步 .class 文件，改由 `target/classes` 监听器负责同步，职责分离更清晰
+
+### 变更
+
+- `hotReloadService.ts` 完全重写，新增 `queueSrcMainChange`、`processSrcMainChanges`、`onClassesFileEvent`、`queuePomChange`、`processPomChange`、`syncResourceToDeploy`、`deleteFromDeploy`、`mapSrcToDeployRelative` 等方法
+- `registerCommands.ts` 重写，新增 `withGuard` 高阶函数包装三个命令
+- `README.md` 移除所有英文翻译，更新热加载章节描述新的监听器架构
+- pom.xml 依赖更新时增加源路径与目标路径一致性检查，避免同路径先删后复制的问题
+
 ## [0.1.2] - 2026-06-09
 
 ### 修复
