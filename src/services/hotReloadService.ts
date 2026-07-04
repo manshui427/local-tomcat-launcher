@@ -164,7 +164,7 @@ export class HotReloadService implements vscode.Disposable {
 
   /** 执行redhat.java增量编译 */
   private async doIncrementalCompile(): Promise<void> {
-    await vscode.commands.executeCommand(JAVA_WORKSPACE_COMPILE_COMMAND, true);
+    await vscode.commands.executeCommand(JAVA_WORKSPACE_COMPILE_COMMAND, false);
   }
 
   dispose(): void {
