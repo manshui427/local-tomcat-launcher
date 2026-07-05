@@ -11,7 +11,7 @@
 - **三路独立文件监听** — `src/main/**`（resources/webapp 同步 + java 增量编译）、`target/classes/**`（同步到部署目录）、`pom.xml`（更新依赖 jar 包）
 - **防抖与去重** — pom.xml 5 秒防抖、java/resources/webapp 1 秒防抖（Map 去重，同一文件多次变更只保留最新操作）、target/classes 无防抖立即同步
 - **文件夹删除同步** — 删除 `src/main/resources`、`src/main/webapp` 或 `target/classes` 下的文件夹时，部署目录中对应文件夹同步删除
-- **按钮防连点保护** — 启动/停止/重启三个按钮加入 `isProcessing` 防护，任意操作执行期间其他按钮点击被忽略
+- **按钮防连点保护** — 启动/停止/重启三个按钮加入 `isProcessing` 防护，执行期间再次点击会被忽略并提示
 - **Java 文件变更解耦** — java 文件变更仅触发 JDT 增量编译，不再直接同步 .class 文件，改由 `target/classes` 监听器负责同步，职责分离更清晰
 
 ### 变更
