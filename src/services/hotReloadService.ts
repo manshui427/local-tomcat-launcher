@@ -20,6 +20,11 @@ export class HotReloadService implements vscode.Disposable {
   private srcPendingChanges: Map<string, FileAction> = new Map();
   private readonly SRC_DEBOUNCE_DELAY = 1000;
 
+  /** target/classes 防抖：1s + 去重 */
+  private classesDebounceTimer: NodeJS.Timeout | null = null;
+  private classesPendingChanges: Map<string, FileAction> = new Map();
+  private readonly CLASSES_DEBOUNCE_DELAY = 1000;
+
   /** pom.xml 防抖：5s */
   private pomDebounceTimer: NodeJS.Timeout | null = null;
   private pomPending: boolean = false;
@@ -34,7 +39,7 @@ export class HotReloadService implements vscode.Disposable {
   /**
    * 注册三个 FileSystemWatcher：
    * 1. src/main/**  — resources/webapp 同步到 deployDir，java 仅触发 JDT 增量编译
-   * 2. target/classes/** — 同步到 deployDir/WEB-INF/classes/（无防抖）
+   * 2. target/classes/** — 同步到 deployDir/WEB-INF/classes/（1s 防抖 + 去重）
    * 3. pom.xml — 重新编译并更新 deployDir/WEB-INF/lib/
    */
   registerFileWatcher(): void {
@@ -55,14 +60,14 @@ export class HotReloadService implements vscode.Disposable {
     srcMainWatcher.onDidChange(uri => this.queueSrcMainChange(uri.fsPath, 'change'));
     srcMainWatcher.onDidDelete(uri => this.queueSrcMainChange(uri.fsPath, 'delete'));
 
-    // ── Watcher 2: target/classes/** （无防抖）──
+    // ── Watcher 2: target/classes/** （1s 防抖 + 去重）──
     const classesWatcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(folder, 'target/classes/**')
     );
     this.watchers.push(classesWatcher);
-    classesWatcher.onDidCreate(uri => this.onClassesFileEvent(uri.fsPath, 'create'));
-    classesWatcher.onDidChange(uri => this.onClassesFileEvent(uri.fsPath, 'change'));
-    classesWatcher.onDidDelete(uri => this.onClassesFileEvent(uri.fsPath, 'delete'));
+    classesWatcher.onDidCreate(uri => this.queueClassesChange(uri.fsPath, 'create'));
+    classesWatcher.onDidChange(uri => this.queueClassesChange(uri.fsPath, 'change'));
+    classesWatcher.onDidDelete(uri => this.queueClassesChange(uri.fsPath, 'delete'));
 
     // ── Watcher 3: pom.xml ──
     const pomWatcher = vscode.workspace.createFileSystemWatcher(
@@ -114,7 +119,7 @@ export class HotReloadService implements vscode.Disposable {
     for (const [filePath, action] of changes) {
       const rel = path.relative(workspacePath, filePath).replace(/\\/g, '/');
 
-      if (rel.startsWith('src/main/java/')) {
+      if (rel.endsWith('.java')) {
         javaFiles.push(filePath);
       } else if (rel.startsWith('src/main/resources/') || rel.startsWith('src/main/webapp/')) {
         resourceChanges.push({ filePath, action });
@@ -152,11 +157,39 @@ export class HotReloadService implements vscode.Disposable {
   }
 
   /* ════════════════════════════════════════════════════
-   *  target/classes/** 处理（无防抖，立即同步）
+   *  target/classes/** 处理（1s 防抖 + 去重）
    * ════════════════════════════════════════════════════ */
 
-  /** target/classes 下的文件变更，立即同步到 deployDir/WEB-INF/classes/ */
-  private onClassesFileEvent(filePath: string, action: FileAction): void {
+  /** 将 target/classes 文件变更加入待处理队列，重置 1s 防抖计时器 */
+  private queueClassesChange(filePath: string, action: FileAction): void {
+    // 去重：同一文件多次变更，保留最新 action
+    this.classesPendingChanges.set(filePath, action);
+
+    if (this.classesDebounceTimer) {
+      clearTimeout(this.classesDebounceTimer);
+    }
+    this.classesDebounceTimer = setTimeout(() => {
+      this.classesDebounceTimer = null;
+      this.processClassesChanges().catch(err => {
+        this.outputChannel.appendLine(`[监听] 处理 target/classes 变更失败: ${err}`);
+      });
+    }, this.CLASSES_DEBOUNCE_DELAY);
+  }
+
+  /** 批量处理 target/classes 下的文件变更 */
+  private async processClassesChanges(): Promise<void> {
+    if (this.classesPendingChanges.size === 0) return;
+
+    const changes = new Map(this.classesPendingChanges);
+    this.classesPendingChanges.clear();
+
+    for (const [filePath, action] of changes) {
+      this.syncClassesFile(filePath, action);
+    }
+  }
+
+  /** 将单个 target/classes 文件同步到 deployDir/WEB-INF/classes/ */
+  private syncClassesFile(filePath: string, action: FileAction): void {
     const workspacePath = this.getWorkspacePath();
     if (!workspacePath) return;
 
@@ -374,11 +407,16 @@ export class HotReloadService implements vscode.Disposable {
       clearTimeout(this.srcDebounceTimer);
       this.srcDebounceTimer = null;
     }
+    if (this.classesDebounceTimer) {
+      clearTimeout(this.classesDebounceTimer);
+      this.classesDebounceTimer = null;
+    }
     if (this.pomDebounceTimer) {
       clearTimeout(this.pomDebounceTimer);
       this.pomDebounceTimer = null;
     }
     this.srcPendingChanges.clear();
+    this.classesPendingChanges.clear();
     this.pomPending = false;
 
     // 清理文件监听器
