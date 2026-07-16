@@ -42,3 +42,5 @@ npm-debug.log*
 
 # Bundled Tomcat runtime (large binary, downloaded separately)
 resources/tomcat9/
+
+.workbuddy

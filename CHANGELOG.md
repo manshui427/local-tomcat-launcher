@@ -1,5 +1,29 @@
 # 更新日志
 
+## [1.0.1] - 2026-07-16
+
+### 修复
+
+- **停止未真正关闭 Tomcat** — `escapeWqlLike` 补充反斜杠 `\` 的 WQL 转义（路径中的反斜杠会导致 WMI 查询报“无效查询”而漏杀进程）；`stop()` 按 CATALINA_BASE 路径精准定位并强制结束本实例 java 进程
+- **启动中点击停止被误报失败** — 引入主动取消哨兵 `TOMCAT_START_ABORTED`，`start()` 据此区分“主动停止”与“进程意外退出”，停止后状态正确回到「已停止」而非「错误」
+- **启动状态过早翻为运行中** — 启动成功判定改为必须等到本 webapp 真正部署完成（日志含 `{contextPath}.xml` 且带耗时关键字），连接器端口监听仅作为“服务器就绪”门槛，默认超时 180 秒
+
+### 新增
+
+- **「刷新」按钮** — 停止 + 执行 `mvn package -DskipTests -T 1C` 重新打包 + 启动，等价于重新构建并部署
+- **编辑器标题栏四个按钮** — 启动 / 停止 / 重启 / 刷新，菜单组 `navigation@10/11/12/13`
+
+### 变更
+
+- **热加载架构调整** — 移除独立的 `target/classes` 文件监听器；改为 `.java` 变更时调用 `java.workspace.compile` 增量编译，以 `Date.now()` 为 cutoff 扫描 `target/classes`，仅同步本次新生成 / 变更的 `.class` 到 `deployDir/WEB-INF/classes`
+- **`.java` 删除清理** — 删除源文件后清理 `target/classes` 与部署目录 `WEB-INF/classes` 中对应的 `.class`（含内部类 `Foo$*.class`），避免残留旧类被 Tomcat 加载
+- **`pom.xml` 变更处理** — 改用 `mvn dependency:copy-dependencies -DcleanOutputDirectory=true -DoutputDirectory=target/{finalName}/WEB-INF/lib`，将依赖复制到部署目录（`deleteFromDeploy` / `syncResourceToDeploy` / `runMavenJar` 全部落地实现）
+- **部署目录统一** — 统一为 `target/{finalName}`（通过 `mvn help:evaluate` 取得 finalName），与 `docBase` 一致
+
+### 文档
+
+- 重写 README.md，与实际实现保持一致（四按钮、JPDA 调试、热加载机制、JDK 识别优先级等）
+
 ## [0.1.3] - 2026-07-04
 
 ### 重构

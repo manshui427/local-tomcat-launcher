@@ -8,10 +8,7 @@ tsconfig.json
 **/tslint.json
 **/.eslintrc.*
 **/.prettierrc*
-specs/**
-.specify/**
-AGENTS.md
-.opencode/**
 *.md
 !README.md
 !CHANGELOG.md
+.workbuddy

@@ -1,18 +1,15 @@
-import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as path from 'path';
-import { TomcatStatus, JAVA_WORKSPACE_COMPILE_COMMAND } from '../constants';
-import { TomcatService } from './tomcatService';
-import { MavenService } from './mavenService';
-import { FileUtils } from '../utils/fileUtils';
+import * as vscode from 'vscode';
 import { OutputChannelManager } from '../ui/outputChannel';
+import { TomcatService } from './tomcatService';
+import { CommonUtils } from '../utils/commonUtils';
 
 type FileAction = 'create' | 'change' | 'delete';
 
 export class HotReloadService implements vscode.Disposable {
   private tomcatService: TomcatService;
   private outputChannel: OutputChannelManager;
-  private mavenService: MavenService;
   private watchers: vscode.FileSystemWatcher[] = [];
 
   /** src/main 防抖：java/resources/webapp 共享 1s */
@@ -20,36 +17,22 @@ export class HotReloadService implements vscode.Disposable {
   private srcPendingChanges: Map<string, FileAction> = new Map();
   private readonly SRC_DEBOUNCE_DELAY = 1000;
 
-  /** target/classes 防抖：1s + 去重 */
-  private classesDebounceTimer: NodeJS.Timeout | null = null;
-  private classesPendingChanges: Map<string, FileAction> = new Map();
-  private readonly CLASSES_DEBOUNCE_DELAY = 1000;
-
   /** pom.xml 防抖：5s */
   private pomDebounceTimer: NodeJS.Timeout | null = null;
-  private pomPending: boolean = false;
   private readonly POM_DEBOUNCE_DELAY = 5000;
 
   constructor(tomcatService: TomcatService, outputChannel: OutputChannelManager) {
     this.tomcatService = tomcatService;
     this.outputChannel = outputChannel;
-    this.mavenService = new MavenService(outputChannel);
   }
 
   /**
-   * 注册三个 FileSystemWatcher：
+   * 注册两个 FileSystemWatcher：
    * 1. src/main/**  — resources/webapp 同步到 deployDir，java 仅触发 JDT 增量编译
-   * 2. target/classes/** — 同步到 deployDir/WEB-INF/classes/（1s 防抖 + 去重）
    * 3. pom.xml — 重新编译并更新 deployDir/WEB-INF/lib/
    */
   registerFileWatcher(): void {
-    const workspacePath = this.getWorkspacePath();
-    if (!workspacePath) {
-      this.outputChannel.appendLine('[监听] 未找到 workspace，跳过文件监听注册');
-      return;
-    }
-
-    const folder = vscode.workspace.workspaceFolders![0];
+    const folder = CommonUtils.getWorkSpace();
 
     // ── Watcher 1: src/main/** ──
     const srcMainWatcher = vscode.workspace.createFileSystemWatcher(
@@ -60,29 +43,16 @@ export class HotReloadService implements vscode.Disposable {
     srcMainWatcher.onDidChange(uri => this.queueSrcMainChange(uri.fsPath, 'change'));
     srcMainWatcher.onDidDelete(uri => this.queueSrcMainChange(uri.fsPath, 'delete'));
 
-    // ── Watcher 2: target/classes/** （1s 防抖 + 去重）──
-    const classesWatcher = vscode.workspace.createFileSystemWatcher(
-      new vscode.RelativePattern(folder, 'target/classes/**')
-    );
-    this.watchers.push(classesWatcher);
-    classesWatcher.onDidCreate(uri => this.queueClassesChange(uri.fsPath, 'create'));
-    classesWatcher.onDidChange(uri => this.queueClassesChange(uri.fsPath, 'change'));
-    classesWatcher.onDidDelete(uri => this.queueClassesChange(uri.fsPath, 'delete'));
 
-    // ── Watcher 3: pom.xml ──
+    // ── Watcher 2: pom.xml ──
     const pomWatcher = vscode.workspace.createFileSystemWatcher(
       new vscode.RelativePattern(folder, 'pom.xml')
     );
     this.watchers.push(pomWatcher);
-    pomWatcher.onDidCreate(() => this.queuePomChange());
     pomWatcher.onDidChange(() => this.queuePomChange());
 
-    this.outputChannel.appendLine('[监听] 文件监听已启动: src/main/**, target/classes/**, pom.xml');
   }
 
-  /* ════════════════════════════════════════════════════
-   *  src/main/** 处理（1s 防抖 + 去重）
-   * ════════════════════════════════════════════════════ */
 
   /** 将文件变更加入待处理队列，重置防抖计时器 */
   private queueSrcMainChange(filePath: string, action: FileAction): void {
@@ -107,142 +77,74 @@ export class HotReloadService implements vscode.Disposable {
     const changes = new Map(this.srcPendingChanges);
     this.srcPendingChanges.clear();
 
-    const workspacePath = this.getWorkspacePath();
-    if (!workspacePath) return;
-
-    const deployDir = this.getDeployDir(workspacePath);
-
     // 按类型分组
-    const javaFiles: string[] = [];
+    const javaFiles: string[] = [];           // .java 新增 / 修改
+    const javaDeleted: string[] = [];         // .java 删除（需清理对应 .class）
     const resourceChanges: { filePath: string; action: FileAction }[] = [];
 
     for (const [filePath, action] of changes) {
-      const rel = path.relative(workspacePath, filePath).replace(/\\/g, '/');
+      const rel = path.relative(CommonUtils.getWorkSpace(), filePath).replace(/\\/g, '/');
 
       if (rel.endsWith('.java')) {
-        javaFiles.push(filePath);
+        if (action === 'delete') {
+          javaDeleted.push(filePath);
+        } else {
+          javaFiles.push(filePath);
+        }
       } else if (rel.startsWith('src/main/resources/') || rel.startsWith('src/main/webapp/')) {
         resourceChanges.push({ filePath, action });
       }
-      // 其他路径忽略
     }
 
-    // ── Java 文件：仅调用 JDT 增量编译，不同步 ──
-    if (javaFiles.length > 0) {
-      const instance = this.tomcatService.getInstance();
-      const running = instance?.status === TomcatStatus.RUNNING;
-      const prefix = running ? '[热加载]' : '[同步]';
-      this.outputChannel.appendLine(`${prefix} Java 文件变更（${javaFiles.length} 个），执行增量编译...`);
+    // 仅当涉及 java 编译产物或资源同步时才解析一次部署目录
+    let deployDir: string | null = null;
+    if (javaFiles.length > 0 || javaDeleted.length > 0 || resourceChanges.length > 0) {
+      deployDir = await this.getDeployDir();
+      if (!deployDir) {
+        this.outputChannel.appendLine('[热加载] 无法确定部署目录（target/{finalName}），跳过同步');
+      }
+    }
+
+    // ── Java 文件：JDT 增量编译，并把变更的 .class 同步到 deployDir/WEB-INF/classes ──
+    if (javaFiles.length > 0 || javaDeleted.length > 0) {
       try {
-        await this.doIncrementalCompile();
-        this.outputChannel.appendLine(`${prefix} 增量编译完成`);
+        const changedClasses = await this.doIncrementalCompile();
+        this.outputChannel.appendLine(`增量编译完成，本次变更 .class 文件: ${changedClasses.length} 个`);
+        if (deployDir) {
+          for (const c of changedClasses) {
+            this.syncClassToDeploy(c, deployDir);
+          }
+        } else {
+          for (const c of changedClasses) {
+            this.outputChannel.appendLine(`  [热加载] 编译产物: ${c}`);
+          }
+        }
       } catch (error: unknown) {
         this.outputChannel.appendLine(`增量编译失败: ${error}`);
       }
-      // 注意：编译产生的 .class 文件由 target/classes 监听器负责同步
+      // 删除的 .java 源：清理对应 .class（含内部类），避免残留旧类被 Tomcat 加载
+      if (deployDir) {
+        for (const f of javaDeleted) {
+          this.deleteClassFromDeploy(f, deployDir);
+        }
+      }
     }
 
     // ── Resources / Webapp 文件：同步到 deployDir ──
     if (resourceChanges.length > 0 && deployDir) {
       for (const { filePath, action } of resourceChanges) {
         if (action === 'delete') {
-          this.deleteFromDeploy(filePath, workspacePath, deployDir);
+          await this.deleteFromDeploy(filePath, deployDir);
         } else {
-          this.syncResourceToDeploy(filePath, workspacePath, deployDir);
+          await this.syncResourceToDeploy(filePath, deployDir);
         }
       }
-    } else if (resourceChanges.length > 0 && !deployDir) {
-      this.outputChannel.appendLine('[同步] 部署目录不存在，跳过资源文件同步');
     }
   }
-
-  /* ════════════════════════════════════════════════════
-   *  target/classes/** 处理（1s 防抖 + 去重）
-   * ════════════════════════════════════════════════════ */
-
-  /** 将 target/classes 文件变更加入待处理队列，重置 1s 防抖计时器 */
-  private queueClassesChange(filePath: string, action: FileAction): void {
-    // 去重：同一文件多次变更，保留最新 action
-    this.classesPendingChanges.set(filePath, action);
-
-    if (this.classesDebounceTimer) {
-      clearTimeout(this.classesDebounceTimer);
-    }
-    this.classesDebounceTimer = setTimeout(() => {
-      this.classesDebounceTimer = null;
-      this.processClassesChanges().catch(err => {
-        this.outputChannel.appendLine(`[监听] 处理 target/classes 变更失败: ${err}`);
-      });
-    }, this.CLASSES_DEBOUNCE_DELAY);
-  }
-
-  /** 批量处理 target/classes 下的文件变更 */
-  private async processClassesChanges(): Promise<void> {
-    if (this.classesPendingChanges.size === 0) return;
-
-    const changes = new Map(this.classesPendingChanges);
-    this.classesPendingChanges.clear();
-
-    for (const [filePath, action] of changes) {
-      this.syncClassesFile(filePath, action);
-    }
-  }
-
-  /** 将单个 target/classes 文件同步到 deployDir/WEB-INF/classes/ */
-  private syncClassesFile(filePath: string, action: FileAction): void {
-    const workspacePath = this.getWorkspacePath();
-    if (!workspacePath) return;
-
-    const deployDir = this.getDeployDir(workspacePath);
-    if (!deployDir) return;
-
-    const targetClassesDir = path.join(workspacePath, 'target', 'classes');
-    const relativePath = path.relative(targetClassesDir, filePath);
-
-    // 确保路径在 target/classes 下
-    if (relativePath.startsWith('..')) return;
-
-    const destPath = path.join(deployDir, 'WEB-INF', 'classes', relativePath);
-
-    if (action === 'delete') {
-      // 删除 deployDir 中对应的文件或文件夹
-      try {
-        fs.rmSync(destPath, { recursive: true, force: true });
-        this.outputChannel.appendLine(`[同步] 已删除: WEB-INF/classes/${relativePath.replace(/\\/g, '/')}`);
-      } catch {
-        // 目标可能不存在，忽略
-      }
-    } else {
-      // create / change：复制文件
-      if (!fs.existsSync(filePath)) return;
-
-      const stat = fs.statSync(filePath);
-      if (stat.isDirectory()) {
-        // 目录：确保目标目录存在
-        if (!fs.existsSync(destPath)) {
-          fs.mkdirSync(destPath, { recursive: true });
-        }
-      } else {
-        // 文件：复制
-        const destDir = path.dirname(destPath);
-        if (!fs.existsSync(destDir)) {
-          fs.mkdirSync(destDir, { recursive: true });
-        }
-        fs.copyFileSync(filePath, destPath);
-        this.outputChannel.appendLine(`[同步] class 已同步: WEB-INF/classes/${relativePath.replace(/\\/g, '/')}`);
-      }
-    }
-  }
-
-  /* ════════════════════════════════════════════════════
-   *  pom.xml 处理（5s 防抖 + 去重）
-   * ════════════════════════════════════════════════════ */
 
   /** 将 pom.xml 变更加入队列，重置 5s 防抖计时器 */
   private queuePomChange(): void {
     // 去重：无论触发多少次，5s 内只处理一次
-    this.pomPending = true;
-
     if (this.pomDebounceTimer) {
       clearTimeout(this.pomDebounceTimer);
     }
@@ -256,149 +158,53 @@ export class HotReloadService implements vscode.Disposable {
 
   /** pom.xml 变更后重新编译并更新 deployDir/WEB-INF/lib/ */
   private async processPomChange(): Promise<void> {
-    if (!this.pomPending) return;
-    this.pomPending = false;
 
-    const workspacePath = this.getWorkspacePath();
-    if (!workspacePath) return;
-
-    const instance = this.tomcatService.getInstance();
-    const running = instance?.status === TomcatStatus.RUNNING;
-    const deployDir = this.getDeployDir(workspacePath);
-
-    if (!deployDir) {
-      this.outputChannel.appendLine('[同步] pom.xml 变更，但部署目录不存在，跳过');
-      return;
-    }
-
-    if (!running) {
-      this.outputChannel.appendLine('[同步] pom.xml 变更，Tomcat 未运行，跳过依赖更新');
-      return;
-    }
-
-    const prefix = running ? '[热加载]' : '[同步]';
-    this.outputChannel.appendLine(`${prefix} pom.xml 变更，重新编译并更新依赖...`);
 
     try {
-      const result = await this.mavenService.compile(workspacePath);
-      if (result.success && result.deployPath) {
-        const libSrc = path.join(result.deployPath, 'WEB-INF', 'lib');
-        const libDst = path.join(deployDir, 'WEB-INF', 'lib');
-
-        // 如果源和目标是同一路径，Maven 编译已经更新了 lib，无需再复制
-        if (path.resolve(libSrc).toLowerCase() === path.resolve(libDst).toLowerCase()) {
-          this.outputChannel.appendLine('依赖 jar 包已由 Maven 编译更新');
-        } else if (fs.existsSync(libSrc)) {
-          if (!fs.existsSync(libDst)) {
-            fs.mkdirSync(libDst, { recursive: true });
-          }
-          FileUtils.cleanDir(libDst);
-          await FileUtils.copyDir(libSrc, libDst);
-          this.outputChannel.appendLine('依赖 jar 包已更新');
-        }
-      } else {
-        this.outputChannel.appendLine('pom.xml 重新编译失败');
-      }
+      await CommonUtils.runMavenJar();
     } catch (error: unknown) {
       this.outputChannel.appendLine(`pom.xml 处理失败: ${error}`);
     }
   }
 
-  /* ════════════════════════════════════════════════════
-   *  辅助方法
-   * ════════════════════════════════════════════════════ */
-
-  private getWorkspacePath(): string | null {
-    const folders = vscode.workspace.workspaceFolders;
-    return folders && folders.length > 0 ? folders[0].uri.fsPath : null;
-  }
-
-  /** 获取部署目录：优先从 Tomcat 实例获取，否则查找 Maven 输出目录 */
-  private getDeployDir(workspacePath: string): string | null {
-    const instance = this.tomcatService.getInstance();
-    if (instance) {
-      return instance.deployDir;
-    }
-    // Tomcat 未启动时，尝试查找已存在的 Maven 输出目录
-    const found = this.mavenService.findExplodedWarPath(workspacePath);
-    return found || null;
-  }
-
-  /** 将资源/webapp 文件同步到 deployDir 对应位置 */
-  private syncResourceToDeploy(filePath: string, workspacePath: string, deployDir: string): void {
-    try {
-      if (!fs.existsSync(filePath)) return;
-
-      const stat = fs.statSync(filePath);
-      if (stat.isDirectory()) {
-        // 目录：确保 deployDir 中对应目录存在
-        const targetRel = this.mapSrcToDeployRelative(filePath, workspacePath);
-        if (targetRel) {
-          const targetPath = path.join(deployDir, targetRel);
-          if (!fs.existsSync(targetPath)) {
-            fs.mkdirSync(targetPath, { recursive: true });
-          }
-        }
-        return;
-      }
-
-      const targetRel = this.mapSrcToDeployRelative(filePath, workspacePath);
-      if (!targetRel) return;
-
-      const targetPath = path.join(deployDir, targetRel);
-      const targetDir = path.dirname(targetPath);
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-      fs.copyFileSync(filePath, targetPath);
-      this.outputChannel.appendLine(`[同步] 资源已同步: ${targetRel.replace(/\\/g, '/')}`);
-    } catch (error: unknown) {
-      this.outputChannel.appendLine(`资源同步失败: ${error}`);
-    }
-  }
-
-  /** 删除 deployDir 中对应的文件或文件夹 */
-  private deleteFromDeploy(filePath: string, workspacePath: string, deployDir: string): void {
-    try {
-      const targetRel = this.mapSrcToDeployRelative(filePath, workspacePath);
-      if (!targetRel) return;
-
-      const targetPath = path.join(deployDir, targetRel);
-      if (fs.existsSync(targetPath)) {
-        // 使用 rmSync recursive 删除文件或文件夹
-        fs.rmSync(targetPath, { recursive: true, force: true });
-        this.outputChannel.appendLine(`[同步] 已删除: ${targetRel.replace(/\\/g, '/')}`);
-      }
-    } catch (error: unknown) {
-      this.outputChannel.appendLine(`删除同步失败: ${error}`);
-    }
-  }
-
-  /**
-   * 将 src 路径映射到 deployDir 中的相对路径
-   * - src/main/webapp/**  → <rel>
-   * - src/main/resources/** → WEB-INF/classes/<rel>
-   * - src/main/java/**     → WEB-INF/classes/<rel>（理论上不会走到这里，java 不同步）
+  /** 执行 redhat.java 增量编译，并返回本次新生成 / 变更的 .class 文件（绝对路径）
+   * - 编译前记 cutoff = Date.now()
+   * - 编译后只扫一次输出目录（target/classes），挑 mtimeMs >= cutoff 的 .class
+   * - 调用方可据此把这些 .class 热部署到 deployDir/WEB-INF/classes
    */
-  private mapSrcToDeployRelative(filePath: string, workspacePath: string): string | null {
-    const rel = path.relative(workspacePath, filePath);
+  private async doIncrementalCompile(): Promise<string[]> {
+    const cutoff = Date.now();
+    await vscode.commands.executeCommand("java.workspace.compile", false);
 
-    if (rel.match(/src[/\\]main[/\\]webapp[/\\]?/)) {
-      return rel.replace(/src[/\\]main[/\\]webapp[/\\]?/, '');
-    }
-
-    if (rel.match(/src[/\\]main[/\\]resources[/\\]?/)) {
-      const resourceRel = rel.replace(/src[/\\]main[/\\]resources[/\\]?/, '');
-      return path.join('WEB-INF', 'classes', resourceRel);
-    }
-
-    // 其他路径不处理
-    return null;
+    // JDT / Maven 默认编译输出目录
+    const outDir = path.join(CommonUtils.getWorkSpace(), 'target', 'classes');
+    const changed: string[] = [];
+    this.collectChangedClasses(outDir, cutoff, changed);
+    return changed;
   }
 
-  /** 执行 redhat.java 增量编译 */
-  private async doIncrementalCompile(): Promise<void> {
-    await vscode.commands.executeCommand(JAVA_WORKSPACE_COMPILE_COMMAND, false);
+  /** 递归遍历 dir，收集 mtimeMs >= cutoff 的 .class 文件（绝对路径）写入 out */
+  private collectChangedClasses(dir: string, cutoff: number, out: string[]): void {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return; // 目录不存在（尚未编译过）则跳过
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        this.collectChangedClasses(full, cutoff, out);
+      } else if (e.isFile() && e.name.endsWith('.class')) {
+        try {
+          if (fs.statSync(full).mtimeMs >= cutoff) {
+            out.push(full);
+          }
+        } catch {
+          // 忽略无法 stat 的文件
+        }
+      }
+    }
   }
 
   dispose(): void {
@@ -407,22 +213,142 @@ export class HotReloadService implements vscode.Disposable {
       clearTimeout(this.srcDebounceTimer);
       this.srcDebounceTimer = null;
     }
-    if (this.classesDebounceTimer) {
-      clearTimeout(this.classesDebounceTimer);
-      this.classesDebounceTimer = null;
-    }
     if (this.pomDebounceTimer) {
       clearTimeout(this.pomDebounceTimer);
       this.pomDebounceTimer = null;
     }
     this.srcPendingChanges.clear();
-    this.classesPendingChanges.clear();
-    this.pomPending = false;
 
     // 清理文件监听器
     for (const w of this.watchers) {
       w.dispose();
     }
     this.watchers = [];
+  }
+
+  /**
+   * 删除部署目录中与被删源文件对应的文件。
+   * 映射规则（相对工作区）：
+   *   src/main/resources/X -> deployDir/WEB-INF/classes/X
+   *   src/main/webapp/X    -> deployDir/X
+   */
+  private async deleteFromDeploy(filePath: string, deployDir: string): Promise<void> {
+    const target = this.mapToDeployPath(filePath, deployDir);
+    if (!target) { return; }
+    try {
+      if (fs.existsSync(target)) {
+        fs.rmSync(target, { recursive: true, force: true });
+        this.outputChannel.appendLine(`[热加载] 已删除: ${target}`);
+      }
+    } catch (e) {
+      this.outputChannel.appendLine(`[热加载] 删除失败: ${target} -> ${e}`);
+    }
+  }
+
+  /**
+   * 将源文件同步（复制）到部署目录对应位置。
+   * 映射规则同上；若源为目录则递归拷贝整棵子树。
+   */
+  private async syncResourceToDeploy(filePath: string, deployDir: string): Promise<void> {
+    const target = this.mapToDeployPath(filePath, deployDir);
+    if (!target) { return; }
+    try {
+      const stat = fs.statSync(filePath);
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      if (stat.isDirectory()) {
+        fs.cpSync(filePath, target, { recursive: true });
+      } else {
+        fs.copyFileSync(filePath, target);
+      }
+      this.outputChannel.appendLine(`[热加载] 已同步: ${filePath} -> ${target}`);
+    } catch (e) {
+      this.outputChannel.appendLine(`[热加载] 同步失败: ${filePath} -> ${e}`);
+    }
+  }
+
+  /**
+   * 将一个 .class 编译产物（位于 target/classes 下）按包结构同步到部署目录
+   * 的 WEB-INF/classes 中，使其被 Tomcat 实际加载。
+   * 例：target/classes/com/foo/A.class -> deployDir/WEB-INF/classes/com/foo/A.class
+   */
+  private syncClassToDeploy(classFile: string, deployDir: string): void {
+    const classesRoot = path.join(CommonUtils.getWorkSpace(), 'target', 'classes');
+    const rel = path.relative(classesRoot, classFile).replace(/\\/g, '/');
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      this.outputChannel.appendLine(`[热加载] 跳过非输出目录文件: ${classFile}`);
+      return;
+    }
+    const target = path.join(deployDir, 'WEB-INF', 'classes', rel);
+    try {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.copyFileSync(classFile, target);
+      this.outputChannel.appendLine(`[热加载] 已同步类: ${classFile} -> ${target}`);
+    } catch (e) {
+      this.outputChannel.appendLine(`[热加载] 同步类失败: ${classFile} -> ${e}`);
+    }
+  }
+
+  /**
+   * 删除一个被移除的 .java 源对应的已部署 .class（含内部类 Foo$*.class），
+   * 避免删除源后残留旧类字节码继续被 Tomcat 加载。
+   * 同时清理 target/classes 与 deployDir/WEB-INF/classes 两处。
+   * 仅处理 src/main/java 下的源（其它目录的产物不部署）。
+   */
+  private deleteClassFromDeploy(javaFile: string, deployDir: string): void {
+    const ws = CommonUtils.getWorkSpace();
+    const rel = path.relative(ws, javaFile).replace(/\\/g, '/');
+    const prefix = 'src/main/java/';
+    if (!rel.startsWith(prefix) || !rel.endsWith('.java')) { return; }
+    // com/foo/Bar（去掉 src/main/java/ 前缀与 .java 后缀）
+    const classRelBase = rel.slice(prefix.length, -'.java'.length);
+    const wsClasses = path.join(ws, 'target', 'classes');
+    const deployClasses = path.join(deployDir, 'WEB-INF', 'classes');
+    for (const root of [wsClasses, deployClasses]) {
+      const dir = path.join(root, path.dirname(classRelBase));
+      const baseName = path.basename(classRelBase); // 如 Bar
+      let entries: string[];
+      try {
+        entries = fs.readdirSync(dir);
+      } catch {
+        continue; // 目录不存在则跳过
+      }
+      for (const name of entries) {
+        // 匹配 Bar.class 以及内部类 Bar$1.class、Bar$Inner.class
+        if (name === `${baseName}.class` || name.startsWith(`${baseName}$`)) {
+          const full = path.join(dir, name);
+          try {
+            fs.rmSync(full, { force: true });
+            this.outputChannel.appendLine(`[热加载] 已删除类: ${full}`);
+          } catch (e) {
+            this.outputChannel.appendLine(`[热加载] 删除类失败: ${full} -> ${e}`);
+          }
+        }
+      }
+    }
+  }
+
+  /** 将 src/main 下的源文件路径映射到部署目录中的目标路径；无法识别则返回 null */
+  private mapToDeployPath(filePath: string, deployDir: string): string | null {
+    const ws = CommonUtils.getWorkSpace();
+    const rel = path.relative(ws, filePath).replace(/\\/g, '/');
+    if (rel.startsWith('src/main/resources/')) {
+      return path.join(deployDir, 'WEB-INF', 'classes', rel.slice('src/main/resources/'.length));
+    }
+    if (rel.startsWith('src/main/webapp/')) {
+      return path.join(deployDir, rel.slice('src/main/webapp/'.length));
+    }
+    return null;
+  }
+
+  /** 计算部署目录：工作区下的 target/{finalName}（与 writeContextXml 的 docBase 一致，即 Tomcat 实际服务目录） */
+  private async getDeployDir(): Promise<string | null> {
+    try {
+      const finalName = await CommonUtils.getMavenFinalName();
+      if (!finalName) { return null; }
+      return path.join(CommonUtils.getWorkSpace(), 'target', finalName);
+    } catch (e) {
+      this.outputChannel.appendLine(`[热加载] 获取部署目录失败: ${e}`);
+      return null;
+    }
   }
 }
