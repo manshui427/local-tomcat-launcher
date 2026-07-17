@@ -213,7 +213,7 @@ export class CommonUtils {
     ch: vscode.OutputChannel,
     httpPort: number,
     contextPath: string = '',
-    timeoutMs: number = 180000
+    timeoutMs: number = 300000
   ): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const home = env.CATALINA_HOME;
