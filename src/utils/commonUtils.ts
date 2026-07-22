@@ -202,10 +202,12 @@ export class CommonUtils {
   /**
    * 使用 PowerShell 启动 Tomcat（catalina.bat jpda run）。
    * - 将传入的 env 合并进进程环境后启动
-   * - stdout/stderr 实时输出到 ch（输出通道）
+   * - stdout/stderr 实时输出到 ch（输出通道），同时各自累积到独立缓冲区用于部署判定
    * - 启动成功的判定为「本 webapp 已部署完成」：
    *   日志出现部署完成行：包含本上下文描述符文件名（{contextPath}.xml / ROOT.xml）
    *   且带耗时（毫秒 / ms）——可区分「正在部署」与「部署完成」。
+   *   注意：catalina/HostConfig 的部署完成日志经 java.util.logging.ConsoleHandler
+   *         写 System.err，因此 stdout + stderr 都会判定。
    * - 带超时保护：超过 timeoutMs 仍未完成则判定失败并清理进程，避免永久挂起
    */
   static startTomcat(
@@ -251,8 +253,11 @@ export class CommonUtils {
         fn();
       };
 
-      // 累积 stdout，用于检测启动完成 / 部署完成日志
+      // 累积 stdout/stderr，用于检测启动完成 / 部署完成日志。
+      // catalina/HostConfig 的部署日志经 java.util.logging.ConsoleHandler 输出，
+      // 该 Handler 默认写 System.err，因此 stderr 也必须参与检测。
       let stdoutBuf = '';
+      let stderrBuf = '';
       const STARTUP_RE = /Server startup in|服务器启动/i;
 
       // 实时把启动日志输出到通道，同时缓冲用于启动判定
@@ -269,7 +274,17 @@ export class CommonUtils {
           finish(() => resolve());
         }
       });
-      proc.stderr?.on('data', (d: Buffer) => ch.append(d.toString()));
+      proc.stderr?.on('data', (d: Buffer) => {
+        const s = d.toString();
+        ch.append(s);
+        stderrBuf += s;
+        if (settled) { return; }
+        // HostConfig 部署日志走 stderr（java.util.logging.ConsoleHandler → System.err）
+        if (CommonUtils.isDeployFinished(stderrBuf, ctxBase)) {
+          serverUp = true;
+          finish(() => resolve());
+        }
+      });
 
       // 轮询：仅做超时保护与「服务器就绪」门槛检测；成功判定完全依赖部署完成日志
       timer = setInterval(async () => {
@@ -325,14 +340,17 @@ export class CommonUtils {
 
   /**
    * 判定 Tomcat 是否已完成「本 webapp」的部署。
-   * 部署完成日志会带上描述符文件名（如 pub.xml / ROOT.xml）且包含耗时（毫秒 / milliseconds / ms）；
-   * 而「正在部署」的启动日志只有文件名、不含耗时——借此区分部署中 vs 部署完成。
-   * 该判定与 Tomcat 语言包无关（中英文均含耗时关键字）。
+   * 部署完成日志会在**同一行**内带上描述符文件名（如 pub.xml / ROOT.xml）和耗时；
+   * 「正在部署」的启动日志只有文件名不含耗时。
+   * 必须同一行内同时命中 marker 与耗时 —— 否则跨行分别命中是误判
+   * （某行有文件名，另一行碰巧含 ms 如时间戳 / 25ms 等）。
    */
   private static isDeployFinished(buf: string, ctxBase: string): boolean {
-    const marker = `${ctxBase}.xml`;
-    if (!buf.includes(marker)) { return false; }
-    return /毫秒|milliseconds|\bms\b/i.test(buf);
+    // 转义 . 等正则特殊字符，确保 marker 作为字面量匹配
+    const escaped = `${ctxBase}.xml`.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // .*? 默认不跨行（JS 中 . 不匹配 \n），自然限定在同一行内
+    const re = new RegExp(`${escaped}.*?(毫秒|milliseconds|\\bms\\b)`, 'i');
+    return re.test(buf);
   }
 
   /**

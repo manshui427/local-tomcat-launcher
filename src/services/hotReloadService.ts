@@ -8,7 +8,6 @@ import { CommonUtils } from '../utils/commonUtils';
 type FileAction = 'create' | 'change' | 'delete';
 
 export class HotReloadService implements vscode.Disposable {
-  private tomcatService: TomcatService;
   private outputChannel: OutputChannelManager;
   private watchers: vscode.FileSystemWatcher[] = [];
 
@@ -21,8 +20,7 @@ export class HotReloadService implements vscode.Disposable {
   private pomDebounceTimer: NodeJS.Timeout | null = null;
   private readonly POM_DEBOUNCE_DELAY = 5000;
 
-  constructor(tomcatService: TomcatService, outputChannel: OutputChannelManager) {
-    this.tomcatService = tomcatService;
+  constructor(outputChannel: OutputChannelManager) {
     this.outputChannel = outputChannel;
   }
 

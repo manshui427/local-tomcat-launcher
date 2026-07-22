@@ -72,7 +72,7 @@
    - `JRE_HOME` — 自动识别的 JDK 路径（见下文「JDK 版本」）
 6. 通过 PowerShell 调用 `catalina.bat jpda run` 启动，日志实时输出到通道。
 
-**启动成功判定**：必须等到「本 webapp 真正完成部署」——Tomcat 日志中出现部署完成行（包含 `{contextPath}.xml` 描述符文件名且带有耗时关键字，如「毫秒」/`milliseconds`/`ms`）。连接器端口监听仅作为「服务器已就绪」的门槛，不再单独作为成功信号，因此不会过早报成功。默认超时 180 秒，超时则判定失败并清理进程。
+**启动成功判定**：必须等到「本 webapp 真正完成部署」——Tomcat 日志中出现部署完成行（包含 `{contextPath}.xml` 描述符文件名且带有耗时关键字，如「毫秒」/`milliseconds`/`ms`）。两条件在同一行内同时命中才判定成功（跨行分别命中不会误判）。stdout 与 stderr 均参与检测（`HostConfig` 部署日志走 `System.err`）。默认超时 180 秒，超时则判定失败并清理进程。
 
 > 注意：启动流程**不会**自动执行 Maven 构建。请确保在启动前 `target/{finalName}` 已存在（使用「刷新」按钮或先 `mvn package`）。
 

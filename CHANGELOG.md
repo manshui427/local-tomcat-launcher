@@ -1,5 +1,16 @@
 # 更新日志
 
+## [1.0.2] - 2026-07-22
+
+### 修复
+
+- **启动成功检测遗漏 stderr（导致永远检测不到部署完成）** — Tomcat 的 `catalina/HostConfig` 部署日志经 `java.util.logging.ConsoleHandler` 写 `System.err`，之前只在 `proc.stdout` 中检测部署完成，stderr 仅转发到输出通道不参与判定。现改为 stdout 与 stderr 各自累积缓冲区并分别判定
+- **isDeployFinished 跨行误判提前返回成功** — 原逻辑 `buf.includes(marker)` + `/ms/.test(buf)` 分两步在整个缓冲区独立匹配，可能命中不同行（某行有部署描述符文件名，另一行碰巧含 `ms`）。改为单条正则确保 marker 与耗时关键字在同一行内，利用 JS `.` 默认不跨行的特性
+
+### 新增
+
+- **激活后预热编译（warmUpCompile）** — 扩展激活后后台轮询等待 `java.workspace.compile` 命令就绪（JDT LS 进入 Standard 模式后动态注册），就绪后执行一次增量编译，让 JDT LS 建立首次构建状态，后续保存 `.java` 触发增量编译才能真正增量（否则首次必然回退为全量）
+
 ## [1.0.1] - 2026-07-16
 
 ### 修复
